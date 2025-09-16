@@ -51,8 +51,8 @@
   <button id="restartBtn">Restart</button>
   <button id="menuBtn">Main Menu</button>
   <div id="modeBtns">
-    <button onclick="startGame('classic')">Classic Mode</button>
-    <button onclick="startGame('timed')">Timed Mode (60s)</button>
+    <button onclick="startGame('classic')"> Normal Mode</button>
+    <button onclick="startGame('timed')">hard mode(60s)</button>
   </div>
 
   <script>
@@ -375,7 +375,7 @@
     restartBtn.onclick = () => resetGame();
     menuBtn.onclick = () => {
       restartBtn.style.display = "none";
-      menuBtn.style.display = "flex";
+      menuBtn.style.display = "none";
       modeBtns.style.display = "flex";
       showStartup();
     };
