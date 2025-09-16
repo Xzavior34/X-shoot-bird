@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Shoot The Birds - JS</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: black; }
+    canvas { display: block; }
+    @font-face {
+      font-family: "FreeSansBold";
+      src: url("fonts/FreeSansBold.ttf") format("truetype");
+    }
+    #restartBtn, #menuBtn {
+      position: absolute;
+      top: 70%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      padding: 12px 24px;
+      font-size: 20px;
+      font-family: "FreeSansBold", sans-serif;
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      display: none;
+    }
+    #restartBtn { background: gold; }
+    #menuBtn { background: crimson; top: 80%; color: white; }
+    #modeBtns {
+      position: absolute;
+      top: 55%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      display: none;
+      flex-direction: column;
+      gap: 12px;
+    }
+    #modeBtns button {
+      padding: 12px 24px;
+      font-size: 20px;
+      font-family: "FreeSansBold", sans-serif;
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      background: dodgerblue;
+      color: white;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas"></canvas>
+  <button id="restartBtn">Restart</button>
+  <button id="menuBtn">Main Menu</button>
+  <div id="modeBtns">
+    <button onclick="startGame('classic')">Classic Mode</button>
+    <button onclick="startGame('timed')">Timed Mode (60s)</button>
+  </div>
+
+  <script>
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+    const restartBtn = document.getElementById("restartBtn");
+    const menuBtn = document.getElementById("menuBtn");
+    const modeBtns = document.getElementById("modeBtns");
+
+    function resizeCanvas() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    window.addEventListener("resize", resizeCanvas);
+    resizeCanvas();
+
+    // Game variables
+    let score, bullets, hits, birds, frameIndex, gameRunning, floatTexts, gameMode, timeLeft;
+    let combo, level, powerUps;
+    let bgPhase = 0, bgTransition = 0; // For smooth background
+    let leaderboard = JSON.parse(localStorage.getItem("birdLeaderboard")) || [];
+    let achievementsUnlocked = [];
+
+    // Convert numbers to Roman numerals
+    function toRoman(num) {
+      if (num <= 0) return "N";
+      const romans = [
+        [1000, "M"], [900, "CM"], [500, "D"], [400, "CD"],
+        [100, "C"], [90, "XC"], [50, "L"], [40, "XL"],
+        [10, "X"], [9, "IX"], [5, "V"], [4, "IV"], [1, "I"]
+      ];
+      let result = "";
+      for (let [val, sym] of romans) {
+        while (num >= val) {
+          result += sym;
+          num -= val;
+        }
+      }
+      return result;
+    }
+
+    // Assets
+    let crosshairImg = new Image(); crosshairImg.src = "images/target.png";
+    let birdImgs = []; 
+    let birdFrames = ["images/frame_001.png","images/frame_002.png","images/frame_003.png","images/frame_004.png"];
+    Promise.all(birdFrames.map(src=> new Promise(res=>{let img=new Image(); img.src=src; img.onload=()=>res(img);})))
+      .then(results=>{ birdImgs=results; });
+
+    // Sounds
+    let bgMusic = new Audio("sound_effects/music.mp3"); bgMusic.loop = true; bgMusic.volume = 0.5;
+    let gunshotSound = new Audio("sound_effects/P.wav");
+    let hitSound = new Audio("sound_effects/P2.wav");
+    let bonusSound = new Audio("sound_effects/P.aiff");
+    let warningSound = new Audio("sound_effects/P2.wav");
+
+    // Bird class
+    class Bird {
+      constructor(type="normal") {
+        this.type = type;
+        this.x = -100;
+        this.y = Math.random() * (canvas.height - 200) + 100;
+        this.speed = 2 + Math.random() * 3 + level * 0.5;
+      }
+      update() { this.x += this.speed; }
+      draw() {
+        let img = birdImgs[Math.floor(frameIndex) % birdImgs.length];
+        ctx.save();
+        if (this.type === "golden") ctx.filter = "hue-rotate(60deg) brightness(1.5)";
+        if (this.type === "black") ctx.filter = "grayscale(100%)";
+        ctx.drawImage(img, this.x, this.y, 80, 60);
+        ctx.restore();
+      }
+    }
+
+    // Power-ups
+    class PowerUp {
+      constructor(type) {
+        this.type = type;
+        this.x = Math.random() * (canvas.width-40);
+        this.y = -40;
+        this.speed = 2;
+      }
+      update() { this.y += this.speed; }
+      draw() {
+        ctx.fillStyle = this.type === "ammo" ? "yellow" :
+                        this.type === "slow" ? "cyan" : "orange";
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, 20, 0, Math.PI*2);
+        ctx.fill();
+        ctx.font = "16px FreeSansBold";
+        ctx.fillStyle = "black";
+        ctx.fillText(this.type[0].toUpperCase(), this.x-5, this.y+5);
+      }
+    }
+
+    // Floating text
+    function addFloatText(text, x, y, color="gold") {
+      floatTexts.push({ text, x, y, alpha: 1, color });
+    }
+
+    function resetGame() {
+      score = 0; bullets = 20; hits = 0; birds = []; frameIndex = 0;
+      gameRunning = true; floatTexts = []; combo = 0; level = 1;
+      powerUps = []; achievementsUnlocked = [];
+      restartBtn.style.display = "none";
+      menuBtn.style.display = "none";
+      modeBtns.style.display = "none";
+      bgPhase = 0; bgTransition = 0;
+      if (gameMode === "timed") timeLeft = 60;
+      if (bgMusic) bgMusic.play().catch(()=>{});
+      gameLoop();
+    }
+
+    // Achievements
+    function checkAchievements() {
+      if (hits >= 10 && !achievementsUnlocked.includes("Sharpshooter"))
+        achievementsUnlocked.push("Sharpshooter");
+      if (score <= -20 && !achievementsUnlocked.includes("Bird Savior"))
+        achievementsUnlocked.push("Bird Savior");
+    }
+
+    // Shooting
+    canvas.addEventListener("click", e => {
+      if (!gameRunning || bullets <= 0) return;
+      if (gunshotSound) { gunshotSound.currentTime = 0; gunshotSound.play(); }
+      let hit = false;
+      for (let i = 0; i < birds.length; i++) {
+        let b = birds[i];
+        if (e.clientX >= b.x && e.clientX <= b.x + 80 &&
+            e.clientY >= b.y && e.clientY <= b.y + 60) {
+          hit = true; hits++; combo++;
+          if (hitSound) { hitSound.currentTime = 0; hitSound.play(); }
+          if (b.type === "normal") { score += 10; addFloatText("+10", e.clientX, e.clientY, "white"); }
+          else if (b.type === "golden") { score += 50; bullets += 2; addFloatText("+50 & +2 bullets!", e.clientX, e.clientY, "yellow"); if (bonusSound){bonusSound.play();} }
+          else if (b.type === "black") { score -= 20; bullets -= 2; addFloatText("-20 & -2 bullets!", e.clientX, e.clientY, "red"); if (warningSound){warningSound.play();} }
+          birds.splice(i, 1);
+          if (hits % 2 === 0) { bullets++; addFloatText("+1 bullet", e.clientX, e.clientY); }
+          if (combo % 3 === 0) { score += 10; addFloatText("Combo +10!", e.clientX, e.clientY-20, "lime"); }
+          break;
+        }
+      }
+      if (!hit) { bullets--; combo = 0; }
+      if (bullets <= 0) { gameRunning = false; showGameOver(); }
+    });
+
+    // Update
+    function updateBirds() {
+      for (let i = birds.length - 1; i >= 0; i--) {
+        let b = birds[i];
+        b.update();
+        if (b.x > canvas.width + 80) { birds.splice(i,1); score -= 5; addFloatText("-5", canvas.width-200, 100, "red"); combo = 0; }
+      }
+    }
+    function updatePowerUps() {
+      for (let i = powerUps.length-1; i>=0; i--) {
+        let p = powerUps[i]; p.update();
+        if (Math.abs(mouseX-p.x)<25 && Math.abs(mouseY-p.y)<25) {
+          if (p.type==="ammo") { bullets+=5; addFloatText("+5 Bullets!", mouseX, mouseY, "yellow"); }
+          if (p.type==="slow") { addFloatText("Slow Motion!", mouseX, mouseY, "cyan"); frameIndex-=0.1; }
+          if (p.type==="double") { addFloatText("Double Score!", mouseX, mouseY, "orange"); score+=20; }
+          powerUps.splice(i,1);
+        } else if (p.y>canvas.height) powerUps.splice(i,1);
+      }
+    }
+
+    // Drawing
+    function drawUI() {
+      ctx.font = "28px FreeSansBold"; ctx.fillStyle="white";
+      ctx.fillText("Score: "+score, 20, 40);
+      ctx.fillText("Level: "+level, 20, 80);
+      if (gameMode==="timed") ctx.fillText("Time: "+timeLeft, 20, 120);
+
+      // Bullet counter top-right in Roman numerals
+      ctx.font = "24px FreeSansBold";
+      ctx.fillStyle = "gold";
+      if (bullets <= 20) {
+        ctx.fillText("Bullets: "+toRoman(bullets), canvas.width-220, 40);
+      } else {
+        ctx.fillText("Bullets: "+bullets, canvas.width-220, 40);
+      }
+    }
+    function drawFloatTexts() {
+      for (let i=floatTexts.length-1;i>=0;i--) {
+        let ft=floatTexts[i]; ctx.font="20px FreeSansBold"; ctx.fillStyle=ft.color;
+        ctx.fillText(ft.text, ft.x, ft.y); ft.y-=1; ft.alpha-=0.02;
+        if (ft.alpha<=0) floatTexts.splice(i,1);
+      }
+    }
+
+    // Helper: interpolate colors
+    function lerpColor(a, b, t) {
+      const ar = parseInt(a.substr(1,2),16), ag = parseInt(a.substr(3,2),16), ab = parseInt(a.substr(5,2),16);
+      const br = parseInt(b.substr(1,2),16), bg = parseInt(b.substr(3,2),16), bb = parseInt(b.substr(5,2),16);
+      const rr = Math.round(ar + (br-ar)*t), rg = Math.round(ag + (bg-ag)*t), rb = Math.round(ab + (bb-ab)*t);
+      return `rgb(${rr},${rg},${rb})`;
+    }
+
+    // Main loop
+    function gameLoop() {
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+
+      // Seasonal gradient background
+      const seasonColors = ["#77dd77","#ffb347","#ff6961","#aec6cf"];
+      let curr = seasonColors[bgPhase % 4];
+      let next = seasonColors[(bgPhase+1) % 4];
+      ctx.fillStyle = lerpColor(curr,next,bgTransition);
+      ctx.fillRect(0,0,canvas.width,canvas.height);
+
+      if (gameRunning) {
+        updateBirds(); updatePowerUps();
+        for (let b of birds) b.draw();
+        for (let p of powerUps) p.draw();
+
+        if (Math.random()<0.02) {
+          let r=Math.random(); if(r<0.8) birds.push(new Bird("normal")); else if(r<0.95) birds.push(new Bird("golden")); else birds.push(new Bird("black"));
+        }
+        if (Math.random()<0.005) { let types=["ammo","slow","double"]; powerUps.push(new PowerUp(types[Math.floor(Math.random()*3)])); }
+        if (score>=level*100) { level++; addFloatText("Level Up!", canvas.width/2, 100, "lime"); }
+
+        frameIndex+=0.2; ctx.drawImage(crosshairImg, mouseX-25, mouseY-25,50,50);
+        drawUI(); drawFloatTexts();
+
+        if (gameMode==="timed" && frameIndex%60===0) { timeLeft--; if(timeLeft<=0){gameRunning=false; showGameOver();} }
+
+        // Smooth seasonal cycle
+        bgTransition += 0.002; 
+        if (bgTransition>=1) { bgTransition=0; bgPhase++; }
+
+        checkAchievements();
+      }
+      requestAnimationFrame(gameLoop);
+    }
+
+    // Game over
+    function showGameOver() {
+      leaderboard.push(score); leaderboard.sort((a,b)=>b-a); leaderboard=leaderboard.slice(0,5);
+      localStorage.setItem("birdLeaderboard", JSON.stringify(leaderboard));
+      ctx.fillStyle="rgba(0,0,0,0.7)"; ctx.fillRect(0,0,canvas.width,canvas.height);
+      ctx.fillStyle="white"; ctx.font="48px FreeSansBold";
+      ctx.fillText("GAME OVER", canvas.width/2-150, canvas.height/2-100);
+      ctx.font="28px FreeSansBold"; ctx.fillText("Final Score: "+score, canvas.width/2-90, canvas.height/2-50);
+      ctx.fillText("Leaderboard:", canvas.width/2-90, canvas.height/2);
+      leaderboard.forEach((s,i)=> ctx.fillText(`${i+1}. ${s}`, canvas.width/2-60, canvas.height/2+40+i*30));
+      if (achievementsUnlocked.length>0) {
+        ctx.fillText("Achievements:", canvas.width/2-90, canvas.height/2+200);
+        achievementsUnlocked.forEach((a,i)=> ctx.fillText(a, canvas.width/2-90, canvas.height/2+240+i*30));
+      }
+      restartBtn.style.display="block";
+      menuBtn.style.display="block";
+    }
+
+    // Startup Screen
+    function showStartup() {
+      ctx.fillStyle="black"; ctx.fillRect(0,0,canvas.width,canvas.height);
+      ctx.fillStyle="gold"; ctx.font="60px FreeSansBold"; ctx.fillText("Shoot The Birds", canvas.width/2-200, canvas.height/2-100);
+      ctx.font="24px FreeSansBold"; ctx.fillStyle="white"; ctx.fillText("Created by Xzavior", canvas.width/2-110, canvas.height/2-40);
+      ctx.fillText("Click to Start", canvas.width/2-80, canvas.height/2+20);
+
+      let highScore = leaderboard.length > 0 ? leaderboard[0] : 0;
+      ctx.fillStyle="lime"; ctx.fillText("High Score: "+highScore, canvas.width/2-90, canvas.height/2+60);
+    }
+
+    // Mouse tracking
+    let mouseX=canvas.width/2, mouseY=canvas.height/2;
+    canvas.addEventListener("mousemove", e=>{mouseX=e.clientX; mouseY=e.clientY;});
+    restartBtn.addEventListener("click", ()=>modeBtns.style.display="flex");
+    menuBtn.addEventListener("click", ()=>{restartBtn.style.display="none";menuBtn.style.display="none";modeBtns.style.display="none";showStartup();canvas.addEventListener("click",()=>modeBtns.style.display="flex",{once:true});});
+
+    function startGame(mode){ gameMode=mode; resetGame(); }
+
+    // Run startup
+    showStartup();
+    canvas.addEventListener("click", ()=>modeBtns.style.display="flex",{once:true});
+  </script>
+</body>
+  </html>
